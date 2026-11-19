@@ -21,7 +21,15 @@ app.use((req, res, next) => {
 
 // Swagger API Documentation
 app.get('/api/docs.json', (req, res) => res.json(swaggerDocument));
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+app.use(
+  '/api-docs',
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerDocument, {
+    swaggerOptions: {
+      persistAuthorization: true,
+    },
+  })
+);
 app.get('/docs', (req, res) => res.redirect('/api-docs'));
 
 app.use('/api/auth', require('./routes/auth.routes'));
