@@ -10,6 +10,10 @@ npm run seed:admin        # creates the first admin
 npm start                 # http://localhost:3000  (API)
 ```
 
+## Swagger / OpenAPI Documentation
+- **Interactive Swagger UI**: [http://localhost:3000/api-docs](http://localhost:3000/api-docs) (or `/docs`)
+- **Raw OpenAPI 3.0 JSON Spec**: [http://localhost:3000/api/docs.json](http://localhost:3000/api/docs.json)
+
 ## Endpoints (all lists accept ?page=&limit=)
 | Method | Path | Access |
 |---|---|---|

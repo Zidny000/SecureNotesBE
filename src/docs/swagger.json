@@ -1,0 +1,639 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Secure Notes REST API",
+    "version": "1.0.0",
+    "description": "Production-ready, secure note-taking and community posting REST API with JWT authentication, role-based access control (RBAC), and optimized MongoDB aggregation pipelines."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Local Development Server"
+    },
+    {
+      "url": "/",
+      "description": "Current Host / Production Server"
+    }
+  ],
+  "tags": [
+    { "name": "Auth", "description": "User registration and authentication (JWT)" },
+    { "name": "Users", "description": "Profile, user management, and interest group analytics (Admin / RBAC)" },
+    { "name": "Notes", "description": "Encrypted / personal notes with owner access controls" },
+    { "name": "Posts", "description": "Public community articles and author aggregation (Scenario 2 $lookup)" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Enter your JWT token obtained from `/api/auth/login` or `/api/auth/register`"
+      }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string", "example": "6afd54e9742df90acf0dbbd5" },
+          "name": { "type": "string", "example": "Alice Johnson" },
+          "email": { "type": "string", "format": "email", "example": "alice@example.com" },
+          "role": { "type": "string", "enum": ["user", "admin"], "example": "user" },
+          "interests": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["cryptography", "coding", "chess"]
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string", "example": "6afd56cdc4330738146f4c90" },
+          "title": { "type": "string", "example": "Database Migration Plan" },
+          "content": { "type": "string", "example": "Migrating shard cluster to replica set..." },
+          "owner": {
+            "oneOf": [
+              { "type": "string", "example": "6afd54e9742df90acf0dbbd5" },
+              {
+                "type": "object",
+                "properties": {
+                  "_id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "email": { "type": "string" }
+                }
+              }
+            ]
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Post": {
+        "type": "object",
+        "properties": {
+          "_id": { "type": "string", "example": "6afd56cdc4330738146f4c91" },
+          "title": { "type": "string", "example": "Understanding MongoDB Multikey Indexes" },
+          "content": { "type": "string", "example": "Multikey indexes index arrays by creating an index entry for each element..." },
+          "author": {
+            "type": "object",
+            "properties": {
+              "_id": { "type": "string", "example": "6afd54e9742df90acf0dbbd5" },
+              "name": { "type": "string", "example": "Alice Johnson" }
+            }
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "properties": {
+          "page": { "type": "integer", "example": 1 },
+          "limit": { "type": "integer", "example": 10 },
+          "total": { "type": "integer", "example": 45 },
+          "totalPages": { "type": "integer", "example": 5 }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string", "example": "Invalid credentials" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/auth/register": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Register a new user account",
+        "description": "Public registration. Creates a user account with role 'user'. Admins are seeded or created by an existing administrator.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "email", "password"],
+                "properties": {
+                  "name": { "type": "string", "example": "John Doe", "maxLength": 100 },
+                  "email": { "type": "string", "format": "email", "example": "john@example.com" },
+                  "password": { "type": "string", "minLength": 8, "example": "SecurePass123!" },
+                  "interests": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "example": ["coding", "security", "chess"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string", "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+                    "user": { "$ref": "#/components/schemas/User" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Validation error or invalid input", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "409": { "description": "Email already in use", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Sign in with email and password",
+        "description": "Authenticates user credentials and issues a signed JWT token valid for 1 day.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "example": "admin@example.com" },
+                  "password": { "type": "string", "example": "ChangeMe123!" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": { "type": "string", "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." },
+                    "user": { "$ref": "#/components/schemas/User" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Email and password required", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "Invalid credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/users/me": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Get authenticated user profile",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Current user profile data",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/User" }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized or token expired", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "List all users (Admin only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Page number" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10, "maximum": 100 }, "description": "Items per page" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of system users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/User" } },
+                    "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden - requires admin role" }
+        }
+      },
+      "post": {
+        "tags": ["Users"],
+        "summary": "Create a new user with specific role (Admin only)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "email", "password"],
+                "properties": {
+                  "name": { "type": "string", "example": "Jane Doe" },
+                  "email": { "type": "string", "format": "email", "example": "jane@example.com" },
+                  "password": { "type": "string", "minLength": 8, "example": "SecretPass123" },
+                  "role": { "type": "string", "enum": ["user", "admin"], "default": "user" },
+                  "interests": { "type": "array", "items": { "type": "string" }, "example": ["chess", "golang"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User created",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } }
+          },
+          "400": { "description": "Validation error" },
+          "403": { "description": "Forbidden" },
+          "409": { "description": "Email already in use" }
+        }
+      }
+    },
+    "/api/users/{id}": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Get user by ID (Admin only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "MongoDB 24-character hex ObjectId" }
+        ],
+        "responses": {
+          "200": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "400": { "description": "Invalid ObjectId format" },
+          "404": { "description": "User not found" }
+        }
+      },
+      "patch": {
+        "tags": ["Users"],
+        "summary": "Update user details or role (Admin only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" }, "description": "MongoDB 24-character hex ObjectId" }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string", "format": "email" },
+                  "password": { "type": "string", "minLength": 8 },
+                  "role": { "type": "string", "enum": ["user", "admin"] },
+                  "interests": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "User updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "400": { "description": "Cannot demote yourself or invalid data" },
+          "404": { "description": "User not found" }
+        }
+      },
+      "delete": {
+        "tags": ["Users"],
+        "summary": "Delete user and cascade delete their notes & posts (Admin only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "User and associated notes/posts permanently deleted" },
+          "400": { "description": "Cannot delete yourself" },
+          "404": { "description": "User not found" }
+        }
+      }
+    },
+    "/api/users/interests/groups": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "Aggregate users grouped by interest (Scenario 1 - Admin only)",
+        "description": "Executes a single User.aggregate() pipeline with $match (using the multikey index on interests), $unwind, $group, and $facet for pagination.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "interest", "in": "query", "schema": { "type": "string" }, "description": "Optional: filter by a specific interest (e.g. 'chess')" },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10, "maximum": 100 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grouped user results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "interest": { "type": "string", "example": "chess" },
+                          "count": { "type": "integer", "example": 4 },
+                          "users": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "_id": { "type": "string" },
+                                "name": { "type": "string" },
+                                "email": { "type": "string" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notes": {
+      "get": {
+        "tags": ["Notes"],
+        "summary": "List notes (Own notes for users, all notes or by owner for admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10, "maximum": 100 } },
+          { "name": "owner", "in": "query", "schema": { "type": "string" }, "description": "Admin only: filter notes by owner ObjectId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of notes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/Note" } },
+                    "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["Notes"],
+        "summary": "Create a new encrypted note",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                  "title": { "type": "string", "maxLength": 200, "example": "Meeting Notes" },
+                  "content": { "type": "string", "maxLength": 10000, "example": "Sprint planning details..." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Note created",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Note" } } }
+          },
+          "400": { "description": "Validation error" }
+        }
+      }
+    },
+    "/api/notes/{id}": {
+      "get": {
+        "tags": ["Notes"],
+        "summary": "Get a note by ID (Owner or Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Note" } } } },
+          "404": { "description": "Note not found or unauthorized" }
+        }
+      },
+      "patch": {
+        "tags": ["Notes"],
+        "summary": "Update a note (Owner only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string", "maxLength": 200 },
+                  "content": { "type": "string", "maxLength": 10000 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Note updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Note" } } } },
+          "404": { "description": "Note not found or you are not the owner" }
+        }
+      },
+      "delete": {
+        "tags": ["Notes"],
+        "summary": "Delete a note (Owner only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "Note deleted successfully" },
+          "404": { "description": "Note not found or you are not the owner" }
+        }
+      }
+    },
+    "/api/posts": {
+      "get": {
+        "tags": ["Posts"],
+        "summary": "List all community posts (Public)",
+        "description": "Public feed of all community posts sorted newest first.",
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10, "maximum": 100 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of posts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/Post" } },
+                    "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Posts"],
+        "summary": "Publish a new community post (Authenticated)",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                  "title": { "type": "string", "maxLength": 200, "example": "Building High Performance Aggregations" },
+                  "content": { "type": "string", "maxLength": 10000, "example": "In this article we discuss how $lookup sub-pipelines work..." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Post published",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Post" } } }
+          },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/posts/{id}": {
+      "get": {
+        "tags": ["Posts"],
+        "summary": "Get a community post by ID (Public)",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Post" } } } },
+          "404": { "description": "Post not found" }
+        }
+      },
+      "patch": {
+        "tags": ["Posts"],
+        "summary": "Update a community post (Author only)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string", "maxLength": 200 },
+                  "content": { "type": "string", "maxLength": 10000 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Post updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Post" } } } },
+          "404": { "description": "Post not found or not author" }
+        }
+      },
+      "delete": {
+        "tags": ["Posts"],
+        "summary": "Delete a community post (Author or Admin)",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "Post deleted successfully" },
+          "404": { "description": "Post not found or unauthorized" }
+        }
+      }
+    },
+    "/api/posts/user/{userId}": {
+      "get": {
+        "tags": ["Posts"],
+        "summary": "List all posts of one user via $lookup aggregation (Scenario 2 - Public)",
+        "description": "Executes User.aggregate() with a $lookup sub-pipeline matching on author and sorting by _id desc backed by the { author: 1, _id: -1 } compound index.",
+        "parameters": [
+          { "name": "userId", "in": "path", "required": true, "schema": { "type": "string" }, "description": "User ObjectId" },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10, "maximum": 100 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "User info and paginated array of posts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "_id": { "type": "string" },
+                        "name": { "type": "string" }
+                      }
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "_id": { "type": "string" },
+                          "title": { "type": "string" },
+                          "content": { "type": "string" },
+                          "createdAt": { "type": "string", "format": "date-time" },
+                          "updatedAt": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    },
+                    "pagination": { "$ref": "#/components/schemas/PaginationMeta" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "User not found" }
+        }
+      }
+    }
+  }
+}

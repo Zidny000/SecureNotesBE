@@ -1,9 +1,11 @@
 const express = require('express');
 const helmet = require('helmet');
+const swaggerUi = require('swagger-ui-express');
+const swaggerDocument = require('./docs/swagger.json');
 const errorHandler = require('./middleware/error');
 
 const app = express();
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '10kb' }));
 
 // Enable CORS for frontend clients
@@ -16,6 +18,11 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Swagger API Documentation
+app.get('/api/docs.json', (req, res) => res.json(swaggerDocument));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+app.get('/docs', (req, res) => res.redirect('/api-docs'));
 
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/users', require('./routes/users.routes'));
